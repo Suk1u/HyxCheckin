@@ -1,0 +1,17 @@
+{
+  "name": "hyx-checkin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Surge module for daily check-in on hyxware.com (HyxAPI): captures the web session once, renews it with the refresh cookie, checks in on a cron schedule and reports balance in a panel.",
+  "scripts": {
+    "build": "node scripts/build-hyx.js",
+    "check": "node scripts/build-hyx.js --check",
+    "test": "node scripts/test-hyx-checkin.js",
+    "validate": "python scripts/validate_sgmodule.py HyxCheckin.sgmodule",
+    "verify": "npm run validate && node --check src/hyx_checkin.js && node scripts/build-hyx.js --check && node scripts/test-hyx-checkin.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

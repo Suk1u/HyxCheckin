@@ -1,0 +1,28 @@
+#!name=HyxAPI 每日签到
+#!desc=hyxware.com（HyxAPI）每日自动签到。首次使用：启用模块后在浏览器退出并重新登录一次 hyxware.com，脚本会自动抓取会话；之后每天定时签到，结果与余额写进面板。也可以不用抓取，直接在参数里填账号密码。
+#!author=海鸥 (Surge)
+#!category=签到
+#!icon=checkmark.seal
+#!arguments=TIME:30 8 * * *,TASK_NAME:HyxAPI签到,CAPTURE:HyxAPI凭据捕获,PANEL_NAME:HyxAPI签到面板,USERNAME:未配置,PASSWORD:未配置,NOTIFY:true,POLICY:未配置,TIMEOUT:20,LOW_BALANCE:0,MITM_HOST:hyxware.com,BASE_URL:hyxware.com
+#!arguments-desc=【TIME】定时时间，cron 表达式，默认每天 08:30。\n【TASK_NAME】定时任务名，改成 # 关闭定时签到。\n【CAPTURE】凭据抓取脚本名，改成 # 关闭自动抓取（关闭后请填 USERNAME / PASSWORD）。\n【PANEL_NAME】面板名，改成 # 关闭面板。\n【USERNAME】登录用户名，留「未配置」表示用抓取到的会话。\n【PASSWORD】登录密码，留「未配置」表示用抓取到的会话；密码含 & 或 = 时请写成百分号编码（如 %26），或改用抓取模式。\n【NOTIFY】是否发送结果通知，true/false。\n【POLICY】出站策略或策略组，留「未配置」表示按分流规则。\n【TIMEOUT】单次请求超时秒数。\n【LOW_BALANCE】余额低于该美元金额时额外提醒，0 表示不提醒。\n【MITM_HOST】需要解密的域名，抓取凭据用。\n【BASE_URL】站点域名，只填域名不要带 https://。\n注：所有参数都必须有值，留空会导致模块无法加载；不需要的参数请保留默认值。
+
+[Panel]
+{{{PANEL_NAME}}} = title="HyxAPI 签到",content="等待首次运行",style=info,script-name=HyxAPI签到脚本,update-interval=3600
+
+[Script]
+# 凭据抓取（主）：登录 / 续期的响应体里有 access_token 与 session.sid，
+# Set-Cookie 里有 new_api_refresh。把 CAPTURE 的值改成单个井号字符可关闭本行。
+{{{CAPTURE}}} = type=http-response,pattern=^https:\/\/hyxware\.com\/api\/user\/(?:login|auth\/refresh)(?:\?.*)?$,requires-body=true,max-size=131072,full-header-mode=true,timeout=15,script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,argument="notify={{{NOTIFY}}}"
+
+# 凭据抓取（兜底）：第三方登录（GitHub / LinuxDO）走的不是 /api/user/login，
+# 这里只看 Set-Cookie，不读响应体，命中即存。
+{{{CAPTURE}}}Fallback = type=http-response,pattern=^https:\/\/hyxware\.com\/api\/,full-header-mode=true,timeout=15,script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,argument="notify={{{NOTIFY}}}"
+
+# 定时签到。把 TASK_NAME 的值改成单个井号字符，整行就会变成注释。
+{{{TASK_NAME}}} = type=cron,cronexp="{{{TIME}}}",script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,timeout=180,wake-system=true,argument="username={{{USERNAME}}}&password={{{PASSWORD}}}&policy={{{POLICY}}}&timeout={{{TIMEOUT}}}&notify={{{NOTIFY}}}&lowBalance={{{LOW_BALANCE}}}&baseUrl={{{BASE_URL}}}"
+
+# 信息面板：今日是否已签、本月/累计次数、余额。
+HyxAPI签到脚本 = type=generic,timeout=20,script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,argument="username={{{USERNAME}}}&password={{{PASSWORD}}}&policy={{{POLICY}}}&timeout={{{TIMEOUT}}}&notify=false&baseUrl={{{BASE_URL}}}"
+
+[MITM]
+hostname = %APPEND% {{{MITM_HOST}}}
