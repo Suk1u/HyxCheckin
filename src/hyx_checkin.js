@@ -60,6 +60,9 @@ var STORE_KEY = {
 
 var SENTINEL = { "未配置": 1, "无": 1, "-": 1, "none": 1, "#": 1 };
 
+/** 面板和自检里会显示这个版本号，用来确认 Surge 跑的到底是不是新版脚本。 */
+var SCRIPT_VERSION = "2026-10-25.2";
+
 var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
@@ -246,7 +249,12 @@ function loadConfig() {
 
 function loadCred() {
   var cred = readJSON(STORE_KEY.cred);
-  if (!cred) return { cookie: "", sid: "", token: "", exp: 0, uid: 0, user: "", capUid: 0, capNotified: 0 };
+  if (!cred) {
+    return {
+      cookie: "", sid: "", token: "", exp: 0, uid: 0, user: "",
+      capUid: 0, capNotified: 0, capCount: 0, capAt: 0
+    };
+  }
   return {
     cookie: trim(cred.cookie),
     sid: trim(cred.sid),
@@ -255,7 +263,9 @@ function loadCred() {
     uid: num(cred.uid) || 0,
     user: trim(cred.user),
     capUid: num(cred.capUid) || 0,
-    capNotified: num(cred.capNotified) || 0
+    capNotified: num(cred.capNotified) || 0,
+    capCount: num(cred.capCount) || 0,
+    capAt: num(cred.capAt) || 0
   };
 }
 
@@ -768,6 +778,8 @@ function handleCapture() {
     if (changed) {
       var firstTime = !cred.capNotified || (cred.uid && cred.uid !== prevUid);
       cred.capUid = cred.uid;
+      cred.capCount = (cred.capCount || 0) + 1;
+      cred.capAt = nowSeconds();
       if (firstTime) cred.capNotified = 1;
       saveCred(cred);
       log("凭据已更新（用户 " + (cred.user || cred.uid || "?") +
@@ -856,6 +868,13 @@ function handleCron() {
 
 /* ============================ 角色三：信息面板 ============================ */
 
+/** 面板底部那行：版本 + 抓取次数，用来判断脚本是不是新版、抓取有没有生效。 */
+function panelFooter(cred) {
+  var cap = "抓取 " + (cred.capCount || 0) + " 次";
+  if (cred.capAt) cap += " · " + formatShort(new Date(cred.capAt * 1000));
+  return cap + " · v" + SCRIPT_VERSION;
+}
+
 function panelFromState(extraNote) {
   var state = readJSON(STORE_KEY.state) || {};
   var cred = loadCred();
@@ -864,7 +883,8 @@ function panelFromState(extraNote) {
   if (!state.at && !hasCredential(cred)) {
     return {
       title: "HyxAPI 签到",
-      content: "尚未捕获凭据\n请在浏览器退出登录再登录一次\n" + CFG.baseUrl.replace(/^https?:\/\//, ""),
+      content: "尚未捕获凭据\n请在浏览器退出登录再登录一次\n" +
+        CFG.baseUrl.replace(/^https?:\/\//, "") + "\n" + panelFooter(cred),
       style: "alert",
       icon: "exclamationmark.triangle",
       "icon-color": "#FF9F0A"
@@ -895,6 +915,7 @@ function panelFromState(extraNote) {
     lines.push("更新 " + formatShort(new Date(state.at)) + (state.user ? " · " + state.user : ""));
   }
   if (extraNote) lines.push(extraNote);
+  lines.push(panelFooter(cred));
 
   var good = !state.error && state.checked;
   return {
@@ -963,11 +984,12 @@ function handleDiagnose(type) {
   var cred = loadCred();
   var state = readJSON(STORE_KEY.state) || {};
 
+  lines.push("脚本版本：" + SCRIPT_VERSION);
   lines.push("运行方式：" + (type || "未知") + "（编辑器手动运行）");
   lines.push("站点：" + CFG.baseUrl);
 
   if (!cred.cookie && !cred.token && !(CFG.username && CFG.password)) {
-    lines.push("凭据：没有");
+    lines.push("凭据：没有（抓取 " + (cred.capCount || 0) + " 次）");
     lines.push("→ 请在浏览器退出登录再登录一次");
     lines.push("→ 或填好 USERNAME / PASSWORD");
     log(lines.join("\n"));

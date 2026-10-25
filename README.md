@@ -80,16 +80,28 @@ https://cdn.jsdelivr.net/gh/Suk1u/HyxCheckin@main/HyxCheckin.sgmodule
 
 | 行 | 类型 | 作用 |
 |---|---|---|
-| `{{{CAPTURE}}}` | http-response | 读登录/续期响应体 → `access_token` / `session.sid`，读 `Set-Cookie` → `new_api_refresh`。`requires-body=true`，`max-size=131072` |
-| `{{{CAPTURE}}}Fallback` | http-response | 只看 `Set-Cookie`，兜住第三方登录（GitHub / LinuxDO 不走 `/api/user/login`）。不读响应体 |
+| `{{{CAPTURE}}}` | http-response | 读登录/续期响应体 → `access_token` / `session.sid`，读 `Set-Cookie` → `new_api_refresh`。`requires-body=true`，`max-size=131072`，`full-header-mode=true` |
+| `{{{CAPTURE}}}Fallback` | http-response | 只看 `Set-Cookie`，兜住第三方登录（GitHub / LinuxDO 不走 `/api/user/login`）。不读响应体，也**刻意不开 `full-header-mode`**——万一设备上的 Surge 不认这个参数，这条仍能把 cookie 收下来 |
 | `{{{TASK_NAME}}}` | cron | 每日签到，`timeout=180`、`wake-system=true` |
 | `HyxAPI签到脚本` | generic | 面板数据源 |
 
 两条抓取行的顺序不能反：Surge 对同一请求只跑**第一条**匹配的 http-response 脚本，
 窄的（登录/续期）必须在宽的前面。
 
-`full-header-mode=true` 是必需的 —— 不开它，多个 `Set-Cookie` 会被合并成一条，
-轮换后的 `new_api_refresh` 就读不出来了。
+主抓取行上 `full-header-mode=true` 是必需的 —— 不开它，多个 `Set-Cookie` 会被合并成一条，
+轮换后的 `new_api_refresh` 有可能读不出来（脚本两种形态都能解析，只是开了更稳）。
+
+## 怎么确认跑的是不是新版脚本
+
+面板最后一行和自检第一行都带**版本号**和**抓取次数**：
+
+```
+抓取 3 次 · 10-25 12:30 · v2026-10-25.2
+```
+
+- 看不到 `v...` 这行 → Surge 跑的还是旧缓存（远程脚本默认 24 小时才更新一次）。
+  删掉模块重装一次即可立刻拿到新版。
+- `抓取 0 次` → 抓取从来没触发过，说明 MITM 没生效，或者你还没退出登录再登录一次。
 
 ## 接口（2026-10-24 核对）
 

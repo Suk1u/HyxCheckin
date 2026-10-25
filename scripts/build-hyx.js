@@ -126,15 +126,18 @@ function check(module, script, expectedRaw) {
     if (!used.has(name)) warnings.push('argument ' + name + ' is declared but never used');
   });
 
-  /* 4. every capture line must preserve duplicate Set-Cookie fields */
+  /* 4. the body-reading capture line must preserve duplicate Set-Cookie fields;
+        the header-only fallback deliberately does NOT use full-header-mode so it
+        still works on a Surge build that does not know the parameter. */
   lines.filter(function (line) { return /type=http-response/.test(line); })
     .forEach(function (capture, index) {
       const label = 'capture line #' + (index + 1);
-      if (!/full-header-mode=true/.test(capture)) {
+      const readsBody = /requires-body=true/.test(capture);
+      if (readsBody && !/full-header-mode=true/.test(capture)) {
         problems.push(label + ' needs full-header-mode=true, otherwise duplicate Set-Cookie is lost');
       }
       if (!/timeout=\d+/.test(capture)) problems.push(label + ' needs an explicit timeout');
-      if (/requires-body=true/.test(capture) && !/max-size=\d+/.test(capture)) {
+      if (readsBody && !/max-size=\d+/.test(capture)) {
         problems.push(label + ' buffers the body and needs an explicit max-size');
       }
     });

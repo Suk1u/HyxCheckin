@@ -15,8 +15,9 @@
 {{{CAPTURE}}} = type=http-response,pattern=^https:\/\/hyxware\.com\/api\/user\/(?:login|auth\/refresh)(?:\?.*)?$,requires-body=true,max-size=131072,full-header-mode=true,timeout=15,script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,argument="notify={{{NOTIFY}}}"
 
 # 凭据抓取（兜底）：第三方登录（GitHub / LinuxDO）走的不是 /api/user/login，
-# 这里只看 Set-Cookie，不读响应体，命中即存。
-{{{CAPTURE}}}Fallback = type=http-response,pattern=^https:\/\/hyxware\.com\/api\/,full-header-mode=true,timeout=15,script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,argument="notify={{{NOTIFY}}}"
+# 这里只看 Set-Cookie，不读响应体，命中即存。刻意不开 full-header-mode ——
+# 万一设备上的 Surge 不认这个参数，这条窄规则仍能把 cookie 收下来。
+{{{CAPTURE}}}Fallback = type=http-response,pattern=^https:\/\/hyxware\.com\/api\/,timeout=15,script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,argument="notify={{{NOTIFY}}}"
 
 # 定时签到。把 TASK_NAME 的值改成单个井号字符，整行就会变成注释。
 {{{TASK_NAME}}} = type=cron,cronexp="{{{TIME}}}",script-path=https://raw.githubusercontent.com/Suk1u/HyxCheckin/main/hyx_checkin.js,script-update-interval=86400,timeout=180,wake-system=true,argument="username={{{USERNAME}}}&password={{{PASSWORD}}}&policy={{{POLICY}}}&timeout={{{TIMEOUT}}}&notify={{{NOTIFY}}}&lowBalance={{{LOW_BALANCE}}}&baseUrl={{{BASE_URL}}}"

@@ -579,7 +579,7 @@ cases.push({
     argument: ARG_CRON_SILENT,
     input: { purpose: 'panel', position: 'policy-selection', panelName: 'HyxAPI 签到' },
     trigger: 'auto-interval',
-    store: Object.assign(credStore(), stateStore()),
+    store: Object.assign(credStore({ capCount: 3, capAt: NOW }), stateStore()),
     http: buildHttp({
       checkin: { status: 200, body: checkinBody(true), headers: JSON_H },
       self: { status: 200, body: SELF_OK, headers: JSON_H }
@@ -592,6 +592,8 @@ cases.push({
     assert(out.title, '面板必须返回 title');
     assert(String(out.content).indexOf('已签到') !== -1, '面板应显示今日状态，实际 ' + out.content);
     assert(String(out.content).indexOf('$17.56') !== -1, '面板应显示余额，实际 ' + out.content);
+    assert(String(out.content).indexOf('抓取 3 次') !== -1, '面板应显示抓取次数，实际 ' + out.content);
+    assert(/v\d{4}-\d{2}-\d{2}\.\d+/.test(String(out.content)), '面板应显示脚本版本，实际 ' + out.content);
     assert.strictEqual(out.style, 'good');
   }
 });
