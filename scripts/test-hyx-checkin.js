@@ -640,6 +640,124 @@ cases.push({
   }
 });
 
+/* ---- 21. editor run (unknown $script.type) must not return {} ---- */
+cases.push({
+  name: '编辑器手动运行 → 返回可读自检结果而不是 {}',
+  cfg: {
+    type: 'generic',
+    script: { type: 'manual' },
+    argument: ARG_CRON_SILENT,
+    store: {},
+    http: []
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    MOCK.assertNoErrors(r);
+    const out = r.result || {};
+    assert(out.title === 'HyxAPI 自检', '应返回自检标题，实际 ' + JSON.stringify(out));
+    assert(String(out.content).indexOf('凭据：没有') !== -1, '应说明没有凭据');
+    assert(String(out.content).indexOf('退出登录') !== -1, '应给出可操作的下一步');
+    assert.strictEqual(out.style, 'alert');
+    assert.strictEqual(r.requests.length, 0, '没有凭据时不应发请求');
+    assert.strictEqual(r.notifications.length, 0, '自检不应发通知');
+  }
+});
+
+/* ---- 22. editor run with credentials ---- */
+cases.push({
+  name: '编辑器手动运行（有凭据）→ 实时自检成功',
+  cfg: {
+    type: 'generic',
+    script: { type: 'manual' },
+    argument: ARG_CRON_SILENT,
+    store: Object.assign(credStore(), stateStore()),
+    http: buildHttp({
+      checkin: { status: 200, body: checkinBody(true), headers: JSON_H },
+      self: { status: 200, body: SELF_OK, headers: JSON_H }
+    })
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    MOCK.assertNoErrors(r);
+    const content = String(r.result.content);
+    assert(content.indexOf('cookie 有') !== -1, '应显示凭据状态，实际 ' + content);
+    assert(content.indexOf('实时查询：正常') !== -1, '应显示实时查询结果');
+    assert(content.indexOf('$17.56') !== -1, '应显示余额');
+    assert.strictEqual(r.result.style, 'good');
+    assert.strictEqual(r.notifications.length, 0, '自检不应发通知');
+  }
+});
+
+/* ---- 23. editor run with a broken credential ---- */
+cases.push({
+  name: '编辑器手动运行（凭据失效）→ 报错并显示原因',
+  cfg: {
+    type: 'generic',
+    script: { type: 'manual' },
+    argument: ARG_CRON_SILENT,
+    store: Object.assign(credStore(), stateStore()),
+    http: buildHttp({ checkin: { error: 'connection reset' } })
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    const content = String(r.result.content);
+    assert(content.indexOf('实时查询：失败') !== -1, '应显示失败，实际 ' + content);
+    assert.strictEqual(r.result.style, 'error');
+  }
+});
+
+/* ---- 24. capture keeps the other cookies the browser sent ---- */
+cases.push({
+  name: 'capture 保留浏览器整串 cookie，只替换轮换的那一个',
+  cfg: {
+    type: 'http-response',
+    argument: 'notify=true',
+    store: credStore({ cookie: 'new_api_refresh=R1' }),
+    request: {
+      url: B + '/api/user/auth/refresh',
+      method: 'POST',
+      headers: [
+        { field: 'Cookie', value: 'new_api_refresh=R1; new_api_has_session=sess-42; other=keep' }
+      ]
+    },
+    response: {
+      status: 200,
+      headers: [{ field: 'Set-Cookie', value: 'new_api_refresh=R2; Path=/api/user/auth; HttpOnly' }],
+      body: bundle(TOKEN2)
+    }
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    MOCK.assertNoErrors(r);
+    const cred = parsedStore(r, 'hyx.cred');
+    assert(cred.cookie.indexOf('new_api_refresh=R2') === 0, '应换成新值，实际 ' + cred.cookie);
+    assert(cred.cookie.indexOf('new_api_has_session=sess-42') !== -1, '其它 cookie 必须保留，实际 ' + cred.cookie);
+    assert(cred.cookie.indexOf('other=keep') !== -1, '其它 cookie 必须保留，实际 ' + cred.cookie);
+  }
+});
+
+/* ---- 25. login failure with an email username gets an actionable hint ---- */
+cases.push({
+  name: 'cron 用邮箱当用户名登录失败 → 提示填的是用户名',
+  cfg: {
+    type: 'cron',
+    argument: ARG_CRON.replace('username=未配置', 'username=a%40b.com').replace('password=未配置', 'password=pw'),
+    store: stateStore(),
+    http: buildHttp({
+      login: {
+        status: 200,
+        headers: JSON_H,
+        body: JSON.stringify({ success: false, message: 'Username or password is incorrect, or user has been banned' })
+      }
+    })
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    const body = r.notifications[0].body;
+    assert(body.indexOf('不是邮箱') !== -1, '应提示登录用的是用户名，实际 ' + body);
+  }
+});
+
 /* ---- 20. cron: quota_per_unit from /api/status when not cached ---- */
 cases.push({
   name: 'cron 未缓存汇率 → 读 /api/status 的 quota_per_unit',

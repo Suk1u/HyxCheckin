@@ -287,6 +287,25 @@ function cookieValue(cookieText, name) {
   return "";
 }
 
+/** 只替换某一个 cookie 的值，其余原样保留（浏览器给的 Cookie 串最可信）。 */
+function setCookieValue(cookieText, name, value) {
+  var parts = cookieText ? String(cookieText).split(";") : [];
+  var out = [];
+  var found = false;
+  for (var i = 0; i < parts.length; i++) {
+    var item = trim(parts[i]);
+    if (!item) continue;
+    if (item.indexOf(name + "=") === 0) {
+      out.push(name + "=" + value);
+      found = true;
+    } else {
+      out.push(item);
+    }
+  }
+  if (!found) out.unshift(name + "=" + value);
+  return out.join("; ");
+}
+
 /* ============================ HTTP（Surge $httpClient） ============================ */
 
 function baseHeaders() {
@@ -341,14 +360,13 @@ function applyAuth(headers, cred) {
 }
 
 function cookieHeaderFor(cred) {
-  var parts = [];
-  if (cookieValue(cred.cookie, "new_api_refresh")) {
-    parts.push("new_api_refresh=" + cookieValue(cred.cookie, "new_api_refresh"));
-  } else if (cred.cookie) {
-    parts.push(cred.cookie);
+  var text = trim(cred.cookie);
+  if (!cookieValue(text, "new_api_refresh")) return "";
+  // 浏览器抓到的整串 Cookie 直接复用；只在缺 has_session 时补一个。
+  if (!cookieValue(text, "new_api_has_session")) {
+    text = text + "; new_api_has_session=1";
   }
-  parts.push("new_api_has_session=1");
-  return parts.join("; ");
+  return text;
 }
 
 /** 从续期/登录响应里取 bundle，字段名与前端解析保持一致。 */
@@ -416,7 +434,15 @@ function loginAuth(cred, callback) {
     var bundle = bundleOf(json);
     if (!bundle) {
       var msg = (json && (json.message || json.code)) || ("HTTP " + res.status);
-      return callback(new Error("登录失败（" + msg + "）"));
+      var hint = "";
+      // 这个站点的登录框只要「用户名」，注册时用户名和邮箱是两个字段。
+      // 用邮箱当用户名登录就会落在这句错误上，所以专门提示一次。
+      if (/incorrect|banned/i.test(msg)) {
+        hint = /@/.test(CFG.username)
+          ? "；注意：登录用的是「用户名」，不是邮箱，请填注册时设的用户名"
+          : "；请确认用户名和密码（不是邮箱）";
+      }
+      return callback(new Error("登录失败（" + msg + "）" + hint));
     }
     mergeBundle(cred, bundle);
     saveCred(cred);
@@ -709,16 +735,22 @@ function handleCapture() {
     var prevUid = cred.capUid;
     var changed = false;
 
-    var rotated = pickRefreshCookie(headerValues(resHeaders, "Set-Cookie"));
-    if (rotated && rotated !== cred.cookie) {
-      cred.cookie = rotated;
+    // 1) 浏览器发上来的整串 Cookie 最可信，先原样收下。
+    var reqCookie = headerValue(reqHeaders, "Cookie");
+    if (reqCookie && /new_api_refresh=/.test(reqCookie) && reqCookie !== cred.cookie) {
+      cred.cookie = reqCookie;
       changed = true;
     }
 
-    var reqCookie = headerValue(reqHeaders, "Cookie");
-    if (!cred.cookie && reqCookie && /new_api_refresh=/.test(reqCookie)) {
-      cred.cookie = reqCookie;
-      changed = true;
+    // 2) 服务端轮换了 refresh cookie 就替换那一段，其余 cookie 保留。
+    var rotated = pickRefreshCookie(headerValues(resHeaders, "Set-Cookie"));
+    if (rotated) {
+      var next = setCookieValue(cred.cookie, "new_api_refresh",
+        rotated.slice("new_api_refresh=".length));
+      if (next !== cred.cookie) {
+        cred.cookie = next;
+        changed = true;
+      }
     }
 
     var sid = headerValue(reqHeaders, "X-Auth-Session");
@@ -832,7 +864,7 @@ function panelFromState(extraNote) {
   if (!state.at && !hasCredential(cred)) {
     return {
       title: "HyxAPI 签到",
-      content: "尚未捕获凭据\n请先用浏览器登录一次\n" + CFG.baseUrl.replace(/^https?:\/\//, ""),
+      content: "尚未捕获凭据\n请在浏览器退出登录再登录一次\n" + CFG.baseUrl.replace(/^https?:\/\//, ""),
       style: "alert",
       icon: "exclamationmark.triangle",
       "icon-color": "#FF9F0A"
@@ -918,6 +950,89 @@ function handlePanel() {
   });
 }
 
+/* ============================ 角色四：手动自检 ============================ */
+
+/**
+ * 在 Surge 的脚本编辑器里点「运行」时，$script.type 不是上面三种之一。
+ * 以前这里直接 $done()，编辑器里只显示一个 {}，看着像「运行失败」。
+ * 现在改成跑一次只读自检，把关键信息直接显示出来，不写存储、不发通知。
+ */
+function handleDiagnose(type) {
+  DEADLINE = Date.now() + 15000;
+  var lines = [];
+  var cred = loadCred();
+  var state = readJSON(STORE_KEY.state) || {};
+
+  lines.push("运行方式：" + (type || "未知") + "（编辑器手动运行）");
+  lines.push("站点：" + CFG.baseUrl);
+
+  if (!cred.cookie && !cred.token && !(CFG.username && CFG.password)) {
+    lines.push("凭据：没有");
+    lines.push("→ 请在浏览器退出登录再登录一次");
+    lines.push("→ 或填好 USERNAME / PASSWORD");
+    log(lines.join("\n"));
+    return finish({
+      title: "HyxAPI 自检",
+      content: lines.join("\n"),
+      style: "alert",
+      icon: "exclamationmark.triangle",
+      "icon-color": "#FF9F0A"
+    });
+  }
+
+  lines.push("凭据：cookie " + (cred.cookie ? "有" : "无") +
+    " · token " + (cred.token ? "有" : "无"));
+  if (cred.user) lines.push("账号：" + cred.user);
+  if (cred.exp) {
+    var expired = cred.exp <= nowSeconds();
+    lines.push("token 到期：" + formatShort(new Date(cred.exp * 1000)) + (expired ? "（已过期）" : ""));
+  }
+  if (state.error) lines.push("上次错误：" + String(state.error).slice(0, 80));
+
+  log(lines.join("\n"));
+
+  fetchQuotaPerUnit(function () {
+    runCheckin({}, function (err, outcome) {
+      if (err) {
+        lines.push("实时查询：失败");
+        lines.push(errText(err).slice(0, 120));
+        log(lines.join("\n"));
+        return finish({
+          title: "HyxAPI 自检",
+          content: lines.join("\n"),
+          style: "error",
+          icon: "exclamationmark.triangle",
+          "icon-color": "#FF453A"
+        });
+      }
+      if (outcome && outcome.disabled) {
+        lines.push("实时查询：站点未开启签到");
+        log(lines.join("\n"));
+        return finish({
+          title: "HyxAPI 自检",
+          content: lines.join("\n"),
+          style: "info",
+          icon: "info.circle",
+          "icon-color": "#0A84FF"
+        });
+      }
+      fetchBalance(function (balanceErr, balance) {
+        var result = buildResult(outcome, balance);
+        lines.push("实时查询：正常" + (outcome.already ? "（今日已签到）" : "（今日未签到）"));
+        lines.push(resultLine(result));
+        log(lines.join("\n"));
+        finish({
+          title: "HyxAPI 自检",
+          content: lines.join("\n"),
+          style: "good",
+          icon: "checkmark.seal",
+          "icon-color": "#30D158"
+        });
+      });
+    });
+  });
+}
+
 /* ============================ 入口 ============================ */
 
 function main() {
@@ -941,9 +1056,8 @@ function main() {
     return handlePanel();
   }
 
-  // 未知类型：只做一次无害的连通性说明，不产生副作用。
-  log("未知脚本类型：" + type + "，本次不执行任何操作");
-  finish();
+  // 编辑器手动运行 / 未知类型 → 只读自检，不产生任何副作用。
+  return handleDiagnose(type);
 }
 
 try {
