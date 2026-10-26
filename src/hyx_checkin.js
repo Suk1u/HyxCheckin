@@ -50,6 +50,7 @@ var DEFAULT_CONFIG = {
   lowBalance: 0,
   username: "",
   password: "",
+  token: "",
   quotaPerUnit: 500000
 };
 
@@ -61,7 +62,7 @@ var STORE_KEY = {
 var SENTINEL = { "未配置": 1, "无": 1, "-": 1, "none": 1, "#": 1 };
 
 /** 面板和自检里会显示这个版本号，用来确认 Surge 跑的到底是不是新版脚本。 */
-var SCRIPT_VERSION = "2026-10-25.2";
+var SCRIPT_VERSION = "2026-10-26.1";
 
 var UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
@@ -229,6 +230,7 @@ function loadConfig() {
   var stored = readJSON(STORE_KEY.state) || {};
   var username = argValue("username");
   var password = argValue("password");
+  var token = argValue("token");
   var timeout = clampInt(argValue("timeout"), DEFAULT_CONFIG.timeoutSeconds, 5, 120);
   var lowBalance = num(argValue("lowBalance"));
   var qpu = num(stored.qpu);
@@ -241,6 +243,7 @@ function loadConfig() {
     lowBalance: lowBalance === null ? DEFAULT_CONFIG.lowBalance : lowBalance,
     username: isUnset(username) ? "" : trim(username),
     password: isUnset(password) ? "" : String(password),
+    token: isUnset(token) ? "" : trim(token),
     quotaPerUnit: qpu && qpu > 0 ? qpu : DEFAULT_CONFIG.quotaPerUnit
   };
 }
@@ -275,7 +278,7 @@ function saveCred(cred) {
 }
 
 function hasCredential(cred) {
-  return !!(cred && (cred.cookie || cred.token || (CFG.username && CFG.password)));
+  return !!(CFG.token || (cred && (cred.cookie || cred.token || (CFG.username && CFG.password))));
 }
 
 /** 只让 token 失效，cookie 保留 —— 下次走续期。 */
@@ -415,9 +418,26 @@ function refreshAuth(cred, callback) {
     var bundle = bundleOf(json);
     if (!bundle) {
       var msg = (json && (json.message || json.code)) || ("HTTP " + res.status);
-      return callback(new Error("会话续期失败（" + msg + "）"));
+      var dead = res.status === 401 || /Unauthorized/i.test(msg);
+      return callback(new Error(dead
+        ? "会话已失效（服务端拒绝续期）。请用浏览器打开一次 hyxware.com 重新登录，" +
+          "脚本会自动抓取新会话；或改用「系统访问令牌」模式（TOKEN 参数），一劳永逸"
+        : "会话续期失败（" + msg + "）"));
     }
     mergeBundle(cred, bundle);
+    // 服务端可能在续期时轮换 refresh cookie，这里必须跟着更新，
+    // 否则下一次续期就会拿着作废的 cookie 去撞 401。
+    var rotated = pickRefreshCookie(headerValues(res.headers, "Set-Cookie"));
+    if (rotated) {
+      var next = setCookieValue(cred.cookie, "new_api_refresh",
+        rotated.slice("new_api_refresh=".length));
+      if (next !== cred.cookie) {
+        cred.cookie = next;
+        cred.capCount = (cred.capCount || 0) + 1;
+        cred.capAt = nowSeconds();
+        log("续期时 cookie 已轮换，已更新");
+      }
+    }
     saveCred(cred);
     log("续期成功，用户 " + (cred.user || cred.uid || "?"));
     callback(null, cred);
@@ -461,8 +481,19 @@ function loginAuth(cred, callback) {
   });
 }
 
-/** 拿到一个可用的 access_token；顺序：本地未过期 token → cookie 续期 → 账号密码。 */
+/**
+ * 拿到一个可用的 access_token。
+ * 优先级：模块里填的「系统访问令牌」→ 本地未过期 token → cookie 续期 → 账号密码。
+ * 令牌模式完全绕开 cookie 会话，是唯一不会因为浏览器会话过期而失效的路径。
+ */
 function ensureAuth(callback) {
+  if (CFG.token) {
+    return callback(null, {
+      cookie: "", sid: "", token: CFG.token, exp: nowSeconds() + 315360000,
+      uid: 0, user: "", capUid: 0, capNotified: 0, capCount: 0, capAt: 0, pat: true
+    });
+  }
+
   var cred = loadCred();
   var now = nowSeconds();
   if (cred.token && cred.exp > now + 120) return callback(null, cred);
@@ -480,8 +511,8 @@ function ensureAuth(callback) {
 
   if (CFG.username && CFG.password) return loginAuth(cred, callback);
 
-  callback(new Error("尚未捕获凭据：请先用浏览器登录一次 " + CFG.baseUrl.replace(/^https?:\/\//, "") +
-    "（需已启用 MITM），或填好账号密码参数"));
+  callback(new Error("尚未捕获凭据：请在浏览器登录一次 " + CFG.baseUrl.replace(/^https?:\/\//, "") +
+    "（需已启用 MITM），或填好 TOKEN 参数"));
 }
 
 /**
@@ -506,6 +537,10 @@ function apiCall(method, path, body, callback) {
         var json = parseJSON(res.body);
         var unauthorized = res.status === 401 ||
           (json && (json.code === "AUTH_UNAUTHORIZED" || json.code === "AUTH_TOKEN_EXPIRED"));
+        if (unauthorized && cred.pat) {
+          return callback(new Error("访问令牌被拒绝（401）：令牌无效、已撤销，" +
+            "或没有签到所需的权限。请到 hyxware.com → 设置 → 安全 → 系统访问令牌 重新生成一个"), null);
+        }
         if (unauthorized && attempt === 1) {
           log("access_token 被拒，重新鉴权后重试");
           clearToken();
@@ -802,7 +837,7 @@ function handleCapture() {
 
 function handleCron() {
   var startedAt = Date.now();
-  log("开始执行，用户 " + (CFG.username || (loadCred().user || "已捕获")));
+  log("开始执行，用户 " + (CFG.token ? "访问令牌" : (CFG.username || loadCred().user || "已捕获")));
 
   fetchQuotaPerUnit(function () {
     runCheckin({}, function (err, outcome) {
@@ -868,11 +903,11 @@ function handleCron() {
 
 /* ============================ 角色三：信息面板 ============================ */
 
-/** 面板底部那行：版本 + 抓取次数，用来判断脚本是不是新版、抓取有没有生效。 */
+/** 面板底部那行：凭据模式 + 版本 + 抓取次数，用来判断脚本是不是新版、走的是哪条鉴权路。 */
 function panelFooter(cred) {
-  var cap = "抓取 " + (cred.capCount || 0) + " 次";
-  if (cred.capAt) cap += " · " + formatShort(new Date(cred.capAt * 1000));
-  return cap + " · v" + SCRIPT_VERSION;
+  var mode = CFG.token ? "令牌" : "会话";
+  var cap = CFG.token ? "" : (" · 抓取 " + (cred.capCount || 0) + " 次");
+  return mode + cap + " · v" + SCRIPT_VERSION;
 }
 
 function panelFromState(extraNote) {
@@ -988,9 +1023,10 @@ function handleDiagnose(type) {
   lines.push("运行方式：" + (type || "未知") + "（编辑器手动运行）");
   lines.push("站点：" + CFG.baseUrl);
 
-  if (!cred.cookie && !cred.token && !(CFG.username && CFG.password)) {
+  if (!cred.cookie && !cred.token && !(CFG.username && CFG.password) && !CFG.token) {
     lines.push("凭据：没有（抓取 " + (cred.capCount || 0) + " 次）");
-    lines.push("→ 请在浏览器退出登录再登录一次");
+    lines.push("→ 推荐填 TOKEN（系统访问令牌）");
+    lines.push("→ 或浏览器退出登录再登录一次");
     lines.push("→ 或填好 USERNAME / PASSWORD");
     log(lines.join("\n"));
     return finish({
@@ -1002,8 +1038,13 @@ function handleDiagnose(type) {
     });
   }
 
-  lines.push("凭据：cookie " + (cred.cookie ? "有" : "无") +
-    " · token " + (cred.token ? "有" : "无"));
+  if (CFG.token) {
+    lines.push("凭据：系统访问令牌（长度 " + CFG.token.length + "）");
+  } else {
+    lines.push("凭据：cookie " + (cred.cookie ? "有" : "无") +
+      " · token " + (cred.token ? "有" : "无"));
+    if (cred.capCount) lines.push("抓取：" + cred.capCount + " 次");
+  }
   if (cred.user) lines.push("账号：" + cred.user);
   if (cred.exp) {
     var expired = cred.exp <= nowSeconds();

@@ -32,15 +32,30 @@ https://cdn.jsdelivr.net/gh/Suk1u/HyxCheckin@main/HyxCheckin.sgmodule
 | `hyx_checkin.js` | 构建产物（= src 的副本），Surge 实际下载的就是它 |
 | `HyxCheckin.sgmodule` | 模块，`script-path` 指向上面那个文件 |
 | `scripts/build-hyx.js` | `node scripts/build-hyx.js` 把 src 同步到根目录；`--check` 做一致性校验 |
-| `scripts/test-hyx-checkin.js` | 20 个 mock 场景 |
+| `scripts/test-hyx-checkin.js` | 28 个 mock 场景 |
 | `scripts/validate_sgmodule.py` | 模块静态校验 |
 
 改脚本的流程是 **改 `src/` → `node scripts/build-hyx.js` → 提交推送**。
 只改 `src/` 不跑构建，Surge 那边下载到的还是旧文件（`--check` 会直接报错提醒）。
 
-## 首次使用（关键一步）
+## 推荐：填一个「系统访问令牌」
 
-抓取发生在**登录响应**和**续期响应**上。所以启用模块后，在手机浏览器里：
+**浏览器会话会过期，令牌不会。** 实测抓取到的会话在 20 小时左右就被服务端拒了
+（面板显示「会话已失效」），所以只靠抓取的方案必须每天有人打开站点续命。
+想让它真正无人值守，用令牌：
+
+1. 浏览器打开 `hyxware.com` → 右上角头像 → **设置 → 安全 → 系统访问令牌**
+   （英文界面是 System access tokens / Personal tokens for the management API）
+2. **创建访问令牌**，有效期选**永不过期**，权限至少勾上能读写账号的那几项
+3. 复制生成的令牌，粘到模块参数 `TOKEN` 里
+4. 完成 —— 不再需要 MITM、不再需要抓取、不再需要密码
+
+令牌模式下脚本只用 `Authorization: Bearer <TOKEN>`，不碰 cookie、不续期、不登录。
+面板底部会显示 `令牌 · v...`，看到这个就说明走的是令牌路径。
+
+## 备选：抓浏览器会话
+
+抓取发生在**登录响应**和**续期响应**上。启用模块后，在手机浏览器里：
 
 1. 打开 `https://hyxware.com`；
 2. 如果已经登录着，**退出登录再登录一次**（这一步必定产生登录响应，最稳）；
@@ -50,13 +65,12 @@ https://cdn.jsdelivr.net/gh/Suk1u/HyxCheckin@main/HyxCheckin.sgmodule
 
 | 现象 | 原因 |
 |---|---|
-| 面板一直显示「尚未捕获凭据」 | MITM 没开 / 没信任证书 / 模块被其它模块的 MITM 行覆盖 |
-| 通知说「会话续期失败」 | cookie 过期（服务端主动踢了会话），重新登录一次 |
-| 通知说「两步验证」 | 账号开了 2FA，只能用抓取模式，别填密码 |
+| 面板显示「尚未捕获凭据」+ `抓取 0 次` | MITM 没开 / 没信任证书 / 模块被其它模块的 MITM 行覆盖 |
+| 面板显示「会话已失效」 | 浏览器会话过期了。重新登录一次即可恢复；想彻底解决就换令牌 |
+| 通知说「两步验证」 | 账号开了 2FA，密码登录走不通，用令牌或抓取 |
 
-不想抓取也可以：把 `USERNAME` / `PASSWORD` 两个参数填上，脚本会直接调
-`POST /api/user/login`。密码里含 `&` 或 `=` 时写成百分号编码（`&` → `%26`），
-或者干脆用抓取模式。
+> 抓取模式的一个固有弱点：浏览器自己续期时会**轮换** `new_api_refresh`，
+> 如果你在那次续期时没开 Surge，存下来的 cookie 就作废了。令牌模式没有这个问题。
 
 ## 参数
 
@@ -66,7 +80,8 @@ https://cdn.jsdelivr.net/gh/Suk1u/HyxCheckin@main/HyxCheckin.sgmodule
 | `TASK_NAME` | `HyxAPI签到` | 定时任务行名，改成 `#` 关闭定时签到 |
 | `CAPTURE` | `HyxAPI凭据捕获` | 抓取行名，改成 `#` 关闭自动抓取（含兜底抓取行） |
 | `PANEL_NAME` | `HyxAPI签到面板` | 面板名，改成 `#` 关闭面板 |
-| `USERNAME` / `PASSWORD` | `未配置` | 留「未配置」表示用抓取到的会话 |
+| `TOKEN` | `未配置` | **系统访问令牌，推荐填**。填了就完全绕开 cookie 会话 |
+| `USERNAME` / `PASSWORD` | `未配置` | 留「未配置」表示用抓取到的会话。注意登录名是**用户名不是邮箱** |
 | `NOTIFY` | `true` | 结果通知开关 |
 | `POLICY` | `未配置` | 出站策略组，留「未配置」按分流规则走 |
 | `TIMEOUT` | `20` | 单请求超时（秒） |
@@ -182,13 +197,14 @@ token 到期：10-25 12:30
 python scripts/validate_sgmodule.py HyxCheckin.sgmodule   # 静态校验，0 error
 node --check src/hyx_checkin.js                           # 语法
 node scripts/build-hyx.js --check                         # 模块 ↔ 脚本一致性（含产物是否落后于 src）
-node scripts/test-hyx-checkin.js                          # 20 个 mock 场景
+node scripts/test-hyx-checkin.js                          # 28 个 mock 场景
 ```
 
 `scripts/test-hyx-checkin.js` 覆盖：登录响应抓取、续期轮换 cookie、清除型 Set-Cookie 不覆盖、
 签到成功、今日已签到、token 过期续期、401 重新鉴权重试、账号密码登录、2FA 报错、
 网络错误、HTML/WAF、站点关闭签到、POST 报已签到后复查、通知开关、
-同日不重复通知、面板正常/无凭据/请求失败回退、`quota_per_unit` 缓存。
+同日不重复通知、面板正常/无凭据/请求失败回退、`quota_per_unit` 缓存、
+编辑器自检三态、整串 cookie 保留、令牌模式成功/被拒、令牌模式面板。
 
 其中「401 重新鉴权重试」这条抓过一个真 bug：`$httpClient` 的方法名是小写的，
 传 `"POST"` 会取到 `undefined` 并**静默退化成 GET** —— 签到请求会变成一次多余的查询。

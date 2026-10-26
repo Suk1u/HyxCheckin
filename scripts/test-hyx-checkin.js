@@ -782,6 +782,71 @@ cases.push({
   }
 });
 
+/* ---- 26. token mode: no cookie, no refresh, no login ---- */
+cases.push({
+  name: 'cron 令牌模式 → 直接用 Bearer 签到，不碰 cookie/续期',
+  cfg: {
+    type: 'cron',
+    argument: ARG_CRON + '&token=PAT-abc-123',
+    store: stateStore(),
+    http: buildHttp({
+      checkin: { status: 200, body: checkinBody(false), headers: JSON_H },
+      self: { status: 200, body: SELF_OK, headers: JSON_H }
+    })
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    MOCK.assertNoErrors(r);
+    assert.strictEqual(calls(r, /\/api\/user\/auth\/refresh/).length, 0, '令牌模式不应续期');
+    assert.strictEqual(calls(r, /\/api\/user\/login/).length, 0, '令牌模式不应登录');
+    assert.strictEqual(calls(r, CHECKIN_GET)[0].headers.Authorization, 'Bearer PAT-abc-123');
+    assert.strictEqual(r.notifications[0].subtitle, '签到成功');
+  }
+});
+
+/* ---- 27. token rejected ---- */
+cases.push({
+  name: 'cron 令牌被拒 → 明确报错，不反复重试',
+  cfg: {
+    type: 'cron',
+    argument: ARG_CRON + '&token=PAT-dead',
+    store: stateStore(),
+    http: buildHttp({
+      checkin: { status: 401, body: UNAUTHORIZED, headers: JSON_H }
+    })
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    MOCK.assertNoErrors(r);
+    assert.strictEqual(calls(r, /\/api\/user\/auth\/refresh/).length, 0, '令牌模式不应续期');
+    assert.strictEqual(calls(r, CHECKIN_GET).length, 1, '令牌被拒不应无限重试');
+    assert.strictEqual(r.notifications[0].subtitle, '失败');
+    assert(r.notifications[0].body.indexOf('访问令牌') !== -1,
+      '应说明是令牌问题，实际 ' + r.notifications[0].body);
+  }
+});
+
+/* ---- 28. panel footer shows the credential mode ---- */
+cases.push({
+  name: 'panel 令牌模式 → 底部显示「令牌」',
+  cfg: {
+    type: 'generic',
+    argument: ARG_CRON_SILENT + '&token=PAT-abc-123',
+    input: { purpose: 'panel', position: 'policy-selection', panelName: 'HyxAPI 签到' },
+    store: stateStore(),
+    http: buildHttp({
+      checkin: { status: 200, body: checkinBody(true), headers: JSON_H },
+      self: { status: 200, body: SELF_OK, headers: JSON_H }
+    })
+  },
+  check: function (r) {
+    MOCK.assertDone(r);
+    assert(String(r.result.content).indexOf('令牌 · v') !== -1,
+      '底部应标出令牌模式，实际 ' + r.result.content);
+    assert(String(r.result.content).indexOf('抓取') === -1, '令牌模式不显示抓取次数');
+  }
+});
+
 /* --------------------------- run --------------------------- */
 
 MOCK.runAll(cases.map(function (c) {
